@@ -1,0 +1,43 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: fsq-os-places-cng
+  namespace: knative-pool
+spec:
+  template:
+    metadata:
+      annotations:
+        # Scale-to-zero with a short retention so idle is cheap, but allow
+        # a tiny grace period so the very next tile in a pan-around session
+        # doesn't always pay cold-start.
+        autoscaling.knative.dev/min-scale: "0"
+        autoscaling.knative.dev/max-scale: "3"
+        autoscaling.knative.dev/target: "5"
+        autoscaling.knative.dev/scale-down-delay: "60s"
+    spec:
+      containerConcurrency: 5
+      timeoutSeconds: 300
+      containers:
+        - image: fsq-os-places-cng:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            # PORT is reserved by Knative (it injects PORT=8080 itself).
+            # HOST defaults to 0.0.0.0 in our Dockerfile so queue-proxy can
+            # reach the user container.
+            - name: HOST
+              value: "0.0.0.0"
+            # Tell DuckDB where to cache its extension downloads. Mounting a
+            # writable volume here would survive cold-starts; keeping it
+            # inside the container for now (extension is ~10MB so re-download
+            # is ok).
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"

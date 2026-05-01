@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>fsq-os-places-cng viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      #map {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 100%;
+      }
+      .panel {
+        position: absolute;
+        z-index: 1;
+        background: rgba(255, 255, 255, 0.92);
+        padding: 10px 14px;
+        border-radius: 6px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        font-size: 13px;
+      }
+      #info {
+        top: 10px;
+        left: 10px;
+        max-width: 320px;
+      }
+      #info h1 {
+        margin: 0 0 6px 0;
+        font-size: 14px;
+      }
+      #info code {
+        background: #eee;
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-size: 12px;
+      }
+      #info dl {
+        margin: 6px 0 0 0;
+      }
+      #info dt {
+        font-weight: 600;
+        margin-top: 4px;
+        color: #555;
+      }
+      #info dd {
+        margin: 0 0 2px 0;
+      }
+      #legend {
+        bottom: 30px;
+        left: 10px;
+        font-size: 12px;
+      }
+      .legend-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 3px 0;
+      }
+      .legend-swatch {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 0, 0, 0.3);
+      }
+      #controls {
+        top: 10px;
+        right: 50px;
+        font-size: 12px;
+        min-width: 240px;
+      }
+      #controls label {
+        display: block;
+        margin: 4px 0;
+      }
+      #controls select {
+        width: 100%;
+      }
+      #controls input[type="range"] {
+        vertical-align: middle;
+        width: 140px;
+      }
+      #controls .value {
+        display: inline-block;
+        min-width: 38px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <div id="info" class="panel">
+      <h1>fsq-os-places-cng</h1>
+      <dl id="meta">
+        <dt>server</dt>
+        <dd><code id="server-url"></code></dd>
+        <dt>data</dt>
+        <dd>Foursquare OS Places <code id="release"></code> (Fused repartition)</dd>
+        <dt>filter</dt>
+        <dd><code id="current-filter"></code></dd>
+      </dl>
+      <p style="margin: 8px 0 0 0; color: #666; font-size: 11px">
+        click a place for properties · drag/pinch to navigate · use the
+        dropdown to filter by top-level category
+      </p>
+    </div>
+
+    <div id="legend" class="panel">
+      <div style="font-weight: 600; margin-bottom: 4px">top-level category</div>
+      <div id="legend-rows"></div>
+    </div>
+
+    <div id="controls" class="panel">
+      <label>
+        category
+        <select id="category">
+          <option value="">(all categories)</option>
+        </select>
+      </label>
+      <label>
+        opacity
+        <input type="range" id="opacity" min="0" max="100" value="80" />
+      </label>
+    </div>
+
+    <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      // Production default: Knative ksvc on z-t (via Cloudflare Tunnel).
+      // Override via ?server=http://localhost:8007 for local dev.
+      // Trim trailing slashes so users can paste either form.
+      const tileServer = (
+        params.get("server") || "https://places-cng.yuiseki.com"
+      ).replace(/\/+$/, "");
+      const initialCategory = params.get("category") || "";
+
+      // Preset views: NYC (default) shows dense urban POI, Tokyo gives
+      // a different category mix.
+      const PRESET_VIEWS = {
+        manhattan: { center: [-73.985, 40.758], zoom: 15.5, pitch: 0 },
+        tokyo: { center: [139.7625, 35.681], zoom: 15.2, pitch: 0 },
+      };
+      const city = params.get("city") || "manhattan";
+      const view = PRESET_VIEWS[city] || PRESET_VIEWS.manhattan;
+
+      document.getElementById("server-url").textContent = tileServer;
+
+      // Top-level Foursquare OS Places categories. The first token of every
+      // breadcrumb in `fsq_category_labels` is one of these. The color
+      // ramp here drives both the circle paint expression and the legend,
+      // so the legend stays in sync with the rendered tiles.
+      const TOP_LEVEL_CATEGORIES = [
+        { label: "Arts and Entertainment",       color: "#e91e63" },
+        { label: "Business and Professional Services", color: "#3f51b5" },
+        { label: "Community and Government",     color: "#9c27b0" },
+        { label: "Dining and Drinking",          color: "#fb8c00" },
+        { label: "Event",                        color: "#795548" },
+        { label: "Health and Medicine",          color: "#e53935" },
+        { label: "Landmarks and Outdoors",       color: "#43a047" },
+        { label: "Retail",                       color: "#fdd835" },
+        { label: "Sports and Recreation",        color: "#00897b" },
+        { label: "Travel and Transportation",    color: "#1976d2" },
+      ];
+      const FALLBACK_COLOR = "#888";
+
+      function buildTilesUrl(filterPrefix) {
+        const qs = filterPrefix
+          ? `?filter_by_category=${encodeURIComponent(filterPrefix)}`
+          : "";
+        return `${tileServer}/tiles/{z}/{x}/{y}.mvt${qs}`;
+      }
+
+      function setFilterDisplay(prefix) {
+        const text = prefix
+          ? `filter_by_category=${prefix}`
+          : "(none)";
+        document.getElementById("current-filter").textContent = text;
+      }
+
+      // Show release version asynchronously (non-blocking).
+      fetch(`${tileServer}/health`)
+        .then((r) => r.json())
+        .then((j) => {
+          document.getElementById("release").textContent = j.release || "?";
+        })
+        .catch(() => {
+          document.getElementById("release").textContent = "(server offline)";
+        });
+
+      const map = new maplibregl.Map({
+        container: "map",
+        // Relative path so the viewer works at any GitHub Pages base path
+        // (e.g. /study-cng-fsq-os-places-tile/) and at local /docs/.
+        style: "./style.json",
+        center: view.center,
+        zoom: view.zoom,
+        pitch: view.pitch,
+        bearing: 0,
+        hash: true,
+      });
+      map.addControl(
+        new maplibregl.NavigationControl({ visualizePitch: true }),
+        "top-right",
+      );
+      map.addControl(new maplibregl.ScaleControl(), "bottom-left");
+
+      let currentFilter = initialCategory;
+
+      map.on("load", () => {
+        map.addSource("places", {
+          type: "vector",
+          tiles: [buildTilesUrl(currentFilter)],
+          minzoom: 12,
+          maxzoom: 16,
+        });
+
+        // Color circles by top-level category. The category_label tile
+        // property is the leaf breadcrumb (e.g. "Dining and Drinking >
+        // Restaurant > Sushi"); we extract the prefix up to the first
+        // ` > ` and match it to the ramp.
+        const colorExpr = ["match", ["get", "top_category"]];
+        for (const c of TOP_LEVEL_CATEGORIES) {
+          colorExpr.push(c.label, c.color);
+        }
+        colorExpr.push(FALLBACK_COLOR);
+
+        map.addLayer({
+          id: "places-circle",
+          type: "circle",
+          source: "places",
+          "source-layer": "places",
+          paint: {
+            "circle-radius": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              12, 2,
+              16, 5,
+              19, 8,
+            ],
+            "circle-color": colorExpr,
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 0.5,
+            "circle-opacity": 0.8,
+          },
+        });
+
+        renderLegend();
+        wireControls();
+        wireClickPopup();
+        setFilterDisplay(currentFilter);
+      });
+
+      function renderLegend() {
+        const root = document.getElementById("legend-rows");
+        for (const c of TOP_LEVEL_CATEGORIES) {
+          const row = document.createElement("div");
+          row.className = "legend-row";
+          row.innerHTML = `
+            <div class="legend-swatch" style="background: ${c.color}"></div>
+            <div>${c.label}</div>
+          `;
+          root.appendChild(row);
+        }
+      }
+
+      function wireControls() {
+        const select = document.getElementById("category");
+        for (const c of TOP_LEVEL_CATEGORIES) {
+          const opt = document.createElement("option");
+          opt.value = c.label;
+          opt.textContent = c.label;
+          select.appendChild(opt);
+        }
+        select.value = currentFilter;
+
+        select.addEventListener("change", (e) => {
+          currentFilter = e.target.value;
+          setFilterDisplay(currentFilter);
+          const newUrl = buildTilesUrl(currentFilter);
+          const src = map.getSource("places");
+          if (src && typeof src.setTiles === "function") {
+            src.setTiles([newUrl]);
+          }
+        });
+
+        const opacityInput = document.getElementById("opacity");
+        opacityInput.addEventListener("input", (e) => {
+          const v = parseFloat(e.target.value) / 100;
+          map.setPaintProperty("places-circle", "circle-opacity", v);
+        });
+      }
+
+      function wireClickPopup() {
+        const popup = new maplibregl.Popup({ closeButton: true });
+        map.on("click", (e) => {
+          const features = map.queryRenderedFeatures(e.point, {
+            layers: ["places-circle"],
+          });
+          if (features.length === 0) return;
+          const f = features[0];
+          const rows = Object.entries(f.properties)
+            .map(([k, v]) => `<dt><b>${k}</b></dt><dd>${v}</dd>`)
+            .join("");
+          popup
+            .setLngLat(e.lngLat)
+            .setHTML(
+              `<div style="font-size:12px"><b>place</b><dl style="margin:4px 0 0 0">${rows}</dl></div>`,
+            )
+            .addTo(map);
+        });
+        map.on(
+          "mouseenter",
+          "places-circle",
+          () => (map.getCanvas().style.cursor = "pointer"),
+        );
+        map.on(
+          "mouseleave",
+          "places-circle",
+          () => (map.getCanvas().style.cursor = ""),
+        );
+      }
+    </script>
+  </body>
+</html>
