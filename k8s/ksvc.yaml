@@ -1,7 +1,7 @@
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: fsq-os-places-cng
+  name: fsq-places-cng
   namespace: knative-pool
 spec:
   template:
@@ -18,7 +18,7 @@ spec:
       containerConcurrency: 5
       timeoutSeconds: 300
       containers:
-        - image: fsq-os-places-cng:0.1.0
+        - image: fsq-places-cng:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

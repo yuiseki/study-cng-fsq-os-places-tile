@@ -5,8 +5,8 @@
 | | |
 | --- | --- |
 | **viewer (static)** | https://yuiseki.github.io/study-cng-fsq-os-places-tile/ |
-| **function (serverless)** | https://places-cng.yuiseki.com/tiles/{z}/{x}/{y}.mvt |
-| **example URL** | https://places-cng.yuiseki.com/tiles/15/9647/12320.mvt?filter_by_category=Dining%20and%20Drinking |
+| **function (serverless)** | https://fsq-places-cng.yuiseki.com/tiles/{z}/{x}/{y}.mvt |
+| **example URL** | https://fsq-places-cng.yuiseki.com/tiles/15/9647/12320.mvt?filter_by_category=Dining%20and%20Drinking |
 
 ## なぜ作ったか
 
@@ -34,7 +34,7 @@ Overture では公式が **STAC catalog** (`https://stac.overturemaps.org/`) を
 ```
 ┌──────────────────────────────────────────┐         ┌─────────────────────────────────┐
 │ frontend (static)                        │  HTTPS  │ function (dynamic)              │
-│ yuiseki.github.io/                       │ ──────► │ places-cng.yuiseki.com          │
+│ yuiseki.github.io/                       │ ──────► │ fsq-places-cng.yuiseki.com          │
 │ study-cng-fsq-os-places-tile/            │         │ (Knative ksvc on z-t)           │
 │   docs/index.html  (MapLibre GL JS)      │         │   FastAPI (uvicorn)             │
 │   docs/style.json  (Esri World Imagery)  │         │     ↓                           │
@@ -51,7 +51,7 @@ Overture では公式が **STAC catalog** (`https://stac.overturemaps.org/`) を
 
 ### 1 リクエストの流れ
 
-1. ブラウザが `https://places-cng.yuiseki.com/tiles/15/9647/12320.mvt?filter_by_category=Dining and Drinking` に GET
+1. ブラウザが `https://fsq-places-cng.yuiseki.com/tiles/15/9647/12320.mvt?filter_by_category=Dining and Drinking` に GET
 2. Cloudflare Tunnel が z-t の Knative Kourier 入口（NodePort）に転送
 3. Knative が ksvc（pod 数 0 ならここで cold start）にルーティング
 4. FastAPI ハンドラが `(z, x, y)` から bbox を計算
@@ -142,10 +142,10 @@ cd docs && python3 -m http.server 8000
 ### コンテナ build + Knative deploy（z-t）
 
 ```bash
-docker build -t fsq-os-places-cng:0.1.0 -f docker/Dockerfile .
-docker save fsq-os-places-cng:0.1.0 -o fsq-os-places-cng-0.1.0.tar
+docker build -t fsq-places-cng:0.1.0 -f docker/Dockerfile .
+docker save fsq-places-cng:0.1.0 -o fsq-places-cng-0.1.0.tar
 # z-t に転送 → containerd に import → kubectl apply
-ctr -n=k8s.io images import fsq-os-places-cng-0.1.0.tar
+ctr -n=k8s.io images import fsq-places-cng-0.1.0.tar
 kubectl apply -f k8s/ksvc.yaml
 ```
 
