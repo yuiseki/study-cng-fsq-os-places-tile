@@ -194,6 +194,19 @@
         document.getElementById("current-filter").textContent = text;
       }
 
+      // Reflect the current category into ?category=... so page reloads
+      // restore the user's pick. MapLibre's hash:true manages the URL
+      // hash (#zoom/lat/lng) independently; the URL API preserves it.
+      function syncCategoryToUrl(prefix) {
+        const url = new URL(window.location.href);
+        if (prefix) {
+          url.searchParams.set("category", prefix);
+        } else {
+          url.searchParams.delete("category");
+        }
+        window.history.replaceState(null, "", url.toString());
+      }
+
       // Show release version asynchronously (non-blocking).
       fetch(`${tileServer}/health`)
         .then((r) => r.json())
@@ -294,6 +307,7 @@
         select.addEventListener("change", (e) => {
           currentFilter = e.target.value;
           setFilterDisplay(currentFilter);
+          syncCategoryToUrl(currentFilter);
           const newUrl = buildTilesUrl(currentFilter);
           const src = map.getSource("places");
           if (src && typeof src.setTiles === "function") {
