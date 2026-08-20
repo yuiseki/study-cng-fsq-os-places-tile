@@ -1,6 +1,6 @@
 [project]
 name = "fsq-os-places-cng"
-version = "0.1.0"
+version = "0.1.2"
 description = "On-the-fly dynamic vector tile server for Foursquare OS Places (CNG-native)."
 readme = "README.md"
 requires-python = ">=3.12"

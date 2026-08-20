@@ -14,12 +14,16 @@ This is the Foursquare counterpart to Overture's STAC catalog: same goal
 
 from __future__ import annotations
 
+import io
+import json
 import logging
+import os
 import threading
 import time
+import urllib.request
 from collections import defaultdict
+from pathlib import Path
 
-import pyarrow.fs as pafs
 import pyarrow.parquet as pq
 
 logger = logging.getLogger("fsq-os-places-cng")
@@ -28,6 +32,19 @@ logger = logging.getLogger("fsq-os-places-cng")
 S3_BUCKET = "us-west-2.opendata.source.coop"
 S3_PREFIX = "fused/fsq-os-places"
 S3_REGION = "us-west-2"
+
+
+def cache_dir() -> Path:
+    """Where prewarmed artifacts (file index, category taxonomy) are cached.
+
+    The docker image runs `python -m fsq_os_places_cng.prewarm` at build time
+    with this pointed at a directory inside the image, so a cold-started pod
+    reads a few KB from local disk instead of pulling 20 MB from S3.
+    """
+    env = os.environ.get("FSQ_INDEX_CACHE_DIR")
+    if env:
+        return Path(env)
+    return Path.home() / ".cache" / "fsq-os-places-cng"
 
 
 class ParquetMetadataIndex:
@@ -46,8 +63,47 @@ class ParquetMetadataIndex:
 
     @property
     def metadata_path(self) -> str:
-        # pyarrow's S3FileSystem expects a bucket-relative path, no scheme.
-        return f"{S3_BUCKET}/{S3_PREFIX}/{self.release}/places/_metadata"
+        # Path-style HTTPS against the regional S3 endpoint. We fetch this
+        # ourselves rather than handing the path to pyarrow's S3FileSystem:
+        # pyarrow reads the 20 MB object through many small ranged GETs and
+        # took 71-95s in the cluster, which blew past the browser's own
+        # timeout on every cold start (the tile request failed, and with no
+        # response there was no CORS header either, so it surfaced as a CORS
+        # error). One plain GET of the same bytes takes ~8s.
+        return (
+            f"https://s3.{S3_REGION}.amazonaws.com/{S3_BUCKET}"
+            f"/{S3_PREFIX}/{self.release}/places/_metadata"
+        )
+
+    def _cache_path(self) -> Path:
+        return cache_dir() / f"index_{self.release}.json"
+
+    def _load_from_disk(self) -> bool:
+        path = self._cache_path()
+        if not path.exists():
+            return False
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                raw = json.load(f)
+            self._items = [(tuple(r["bbox"]), r["href"]) for r in raw]
+        except Exception as e:
+            logger.warning("index cache load failed (%s); rebuilding", e)
+            return False
+        logger.info(
+            "Parquet index cache hit: %d files from %s", len(self._items), path
+        )
+        return True
+
+    def _save_to_disk(self) -> None:
+        path = self._cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(
+                [{"bbox": list(bb), "href": href} for bb, href in self._items], f
+            )
+        tmp.replace(path)
+        logger.info("Parquet index cache wrote %d files to %s", len(self._items), path)
 
     def _s3_href(self, file_name: str) -> str:
         return f"s3://{S3_BUCKET}/{S3_PREFIX}/{self.release}/places/{file_name}"
@@ -57,10 +113,16 @@ class ParquetMetadataIndex:
         with self._build_lock:
             if self._built:
                 return
+            if self._load_from_disk():
+                self._built = True
+                return
             t0 = time.time()
-            fs = pafs.S3FileSystem(region=S3_REGION, anonymous=True)
-            md = pq.read_metadata(self.metadata_path, filesystem=fs)
+            with urllib.request.urlopen(self.metadata_path, timeout=120) as resp:
+                raw = resp.read()
             t_meta = time.time() - t0
+            # Parsing the footer out of the buffer is ~0.1s; the fetch is the
+            # whole cost.
+            md = pq.read_metadata(io.BytesIO(raw))
 
             # Map column path -> column index (consistent across row groups).
             rg0 = md.row_group(0)
@@ -109,12 +171,18 @@ class ParquetMetadataIndex:
             ]
             self._built = True
             logger.info(
-                "Parquet _metadata index ready: %d files (%d row groups) in %.1fs (metadata fetch %.1fs)",
+                "Parquet _metadata index ready: %d files (%d row groups) in %.1fs "
+                "(metadata fetch %.1fs, %.1f MB)",
                 len(self._items),
                 md.num_row_groups,
                 time.time() - t0,
                 t_meta,
+                len(raw) / 1e6,
             )
+            try:
+                self._save_to_disk()
+            except Exception as e:
+                logger.warning("index cache save failed (%s); continuing", e)
 
     def files_intersecting(
         self,

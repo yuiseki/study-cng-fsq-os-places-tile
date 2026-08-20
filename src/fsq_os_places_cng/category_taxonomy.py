@@ -19,6 +19,7 @@ effort, not exhaustive.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -26,17 +27,48 @@ from collections import defaultdict
 
 import duckdb
 
+from fsq_os_places_cng.parquet_index import cache_dir
+
 logger = logging.getLogger("fsq-os-places-cng")
 
 
 class CategoryTaxonomy:
     """`top_label` (e.g. 'Dining and Drinking') -> `set[leaf_id]`."""
 
-    def __init__(self, sample_s3_uri: str) -> None:
+    def __init__(self, sample_s3_uri: str, release: str) -> None:
         self.sample_s3_uri = sample_s3_uri
+        self.release = release
         self._top_to_ids: dict[str, list[str]] = {}
         self._build_lock = threading.Lock()
         self._built = False
+
+    def _cache_path(self):
+        return cache_dir() / f"taxonomy_{self.release}.json"
+
+    def _load_from_disk(self) -> bool:
+        path = self._cache_path()
+        if not path.exists():
+            return False
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                self._top_to_ids = json.load(f)
+        except Exception as e:
+            logger.warning("taxonomy cache load failed (%s); rebuilding", e)
+            return False
+        logger.info(
+            "Category taxonomy cache hit: %d top labels from %s",
+            len(self._top_to_ids), path,
+        )
+        return True
+
+    def _save_to_disk(self) -> None:
+        path = self._cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(self._top_to_ids, f)
+        tmp.replace(path)
+        logger.info("Category taxonomy cache wrote %s", path)
 
     def build(self, con: duckdb.DuckDBPyConnection) -> None:
         """Populate the mapping from the dataset's `_sample` part.
@@ -46,6 +78,9 @@ class CategoryTaxonomy:
         """
         with self._build_lock:
             if self._built:
+                return
+            if self._load_from_disk():
+                self._built = True
                 return
             t0 = time.time()
             rows = con.execute(
@@ -72,6 +107,10 @@ class CategoryTaxonomy:
                 sum(len(v) for v in self._top_to_ids.values()),
                 time.time() - t0,
             )
+            try:
+                self._save_to_disk()
+            except Exception as e:
+                logger.warning("taxonomy cache save failed (%s); continuing", e)
 
     def expand(self, top_label: str) -> list[str] | None:
         """Return the leaf-id list for `top_label`, or None if unknown."""

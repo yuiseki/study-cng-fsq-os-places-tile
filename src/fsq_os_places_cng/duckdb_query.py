@@ -86,7 +86,9 @@ def get_taxonomy() -> CategoryTaxonomy:
         return _taxonomy
     with _taxonomy_lock:
         if _taxonomy is None:
-            _taxonomy = CategoryTaxonomy(sample_s3_uri=FSQ_SAMPLE_URI)
+            _taxonomy = CategoryTaxonomy(
+                sample_s3_uri=FSQ_SAMPLE_URI, release=FSQ_RELEASE
+            )
     return _taxonomy
 
 

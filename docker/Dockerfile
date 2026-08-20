@@ -23,6 +23,13 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
+# Bake the derived Parquet index into the image. The 20 MB `_metadata` fetch
+# took 71-95s from inside the cluster, so paying it on every cold start meant
+# the first tile request timed out in the browser. The cached index is a few
+# KB and makes startup effectively instant.
+ENV FSQ_INDEX_CACHE_DIR=/app/.index-cache
+RUN uv run --no-dev python -m fsq_os_places_cng.prewarm
+
 ENV HOST=0.0.0.0 \
     PORT=8080
 

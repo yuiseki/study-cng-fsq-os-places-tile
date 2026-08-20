@@ -18,7 +18,7 @@ spec:
       containerConcurrency: 5
       timeoutSeconds: 300
       containers:
-        - image: fsq-places-cng:0.1.0
+        - image: fsq-places-cng:0.1.2
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

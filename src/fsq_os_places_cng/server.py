@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="fsq-os-places-cng",
-    version="0.1.0",
+    version="0.1.2",
     description=(
         "On-the-fly dynamic vector tile server for Foursquare OS Places "
         f"(release {FSQ_RELEASE})."
